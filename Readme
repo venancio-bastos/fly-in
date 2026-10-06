@@ -1,0 +1,219 @@
+*This project has been created as part of the 42 curriculum by <vebastos>.*
+
+# Fly-in
+
+## Description
+
+Fly-in routes a fleet of drones from a start zone to an end zone through a
+network of connected zones, in the fewest possible simulation turns.
+
+The program reads a map file (zones, connections, capacities, zone types),
+plans every drone, prints the result turn by turn and checks by itself that
+the result respects every rule of the subject.
+
+What the simulation has to respect:
+
+- A zone holds at most `max_drones` drones at the same time (default 1).
+  The start and end zones have no limit.
+- A connection carries at most `max_link_capacity` drones per turn
+  (default 1).
+- Moving into a `normal` or `priority` zone costs 1 turn, into a
+  `restricted` zone 2 turns. A drone on its way to a restricted zone stays
+  on the connection and must arrive on the next turn. It cannot wait there.
+- `blocked` zones can never be entered.
+- No graph library is used (no networkx, graphlib, ...). The project is fully
+  object-oriented and fully typed (flake8 and mypy are clean).
+
+## Instructions
+
+Requirements: Python 3.10 or later and [uv](https://docs.astral.sh/uv/).
+
+```
+make install                          # install dependencies with uv
+make run MAP=maps/easy/01_linear_path.txt     # visual terminal output
+make plain MAP=maps/easy/01_linear_path.txt   # only the format of the subject
+make debug MAP=maps/easy/01_linear_path.txt   # run under pdb
+make lint                             # flake8 + mypy
+make lint-strict                      # flake8 + mypy --strict
+make clean                            # remove caches
+```
+
+`make run` and `make plain` use `maps/easy/01_linear_path.txt` when `MAP` is
+not given. The program can also be run directly:
+
+```
+uv run python main.py <map_file> [--plain]
+```
+
+### Map format
+
+```
+nb_drones: 5
+start_hub: hub 0 0 [color=green]
+end_hub: goal 10 10 [color=yellow]
+hub: roof1 3 4 [zone=restricted color=red max_drones=2]
+connection: hub-roof1 [max_link_capacity=2]
+```
+
+Zone names cannot contain dashes or spaces. Any invalid file stops the
+program with a message that gives the line and the cause, for example
+`Error: line 4: invalid zone type 'weird'`.
+
+### Project layout
+
+| File | Role |
+|---|---|
+| `models.py` | `Zone`, `StartHub`, `EndHub`, `Connection`, `Drone` |
+| `graph.py` | `Graph`: zones by name, connections, neighbours |
+| `parser.py` | `Parser`: reads and validates the map file |
+| `pathfinder.py` | `Pathfinder`, `ReservationTable`, `Move`: the planning |
+| `simulation.py` | `Simulation`: turns the plans into output lines |
+| `validator.py` | `Validator`: replays the output and checks every rule |
+| `visualizer.py` | `TerminalVisualizer`: colored turn-by-turn display |
+| `main.py` | Entry point |
+
+## Algorithm
+
+### Strategy
+
+The planning is done on a graph with time. A state is not "the drone is in
+zone X" but "the drone is in zone X at turn t". Waiting is an ordinary move
+from `(X, t)` to `(X, t + 1)`.
+
+A **reservation table** counts how many drones use each zone and each
+connection at each turn. The drones are planned one after the other:
+
+1. For the next drone, run Dijkstra over the states `(zone, turn)`. A move or
+   a wait is only allowed if the table still has room for it (zone capacity
+   at the arrival turn, connection capacity during every turn of the trip).
+2. The cost that is minimised is the arrival turn. Ties are broken by the
+   number of entered zones that are not `priority` zones, so priority zones
+   are preferred when they cost nothing in turns.
+3. Reserve everything the found path uses, then plan the next drone.
+
+Because every drone is planned around the reservations of the previous ones,
+the final schedule never exceeds a capacity and cannot deadlock. The spread
+of drones over several paths is not coded separately: when the short path is
+full at a given turn, the next drone finds another path or waits.
+
+Restricted zones are a move of 2 turns. The connection is reserved during
+both turns and the destination zone must have room at the arrival turn,
+because the drone cannot wait on the connection.
+
+### Complexity and memory
+
+For one drone the search visits at most `V * T` states (`V` zones, `T` the
+number of turns, bounded by a safety limit) and looks at `E * T` moves, so
+`O(T * (V + E) * log(V * T))` with a heap. It is repeated once per drone,
+so the cost grows roughly with the square of the number of drones, because
+`T` grows with the number of drones.
+
+Paths are not cached between drones: the reservation table changes after
+every drone, so a cached path could be invalid. Memory is `O(V * T)` for the
+search plus the reservation table, which holds one entry per used zone and
+turn.
+
+### Limits
+
+Planning one drone at a time always gives a valid schedule, but it does not
+prove that the number of turns is the minimum possible.
+
+### Validation
+
+`Validator` does not reuse the planner. It reads the printed text again, turn
+by turn, with `Drone`, `Zone` and `Connection` objects, and checks: valid
+connection, no blocked zone, cost 1 or 2 turns, no waiting on a connection,
+zone and connection capacities, and that every drone reaches the end. The
+program reports `Total turns: N (validated)` on the error output when the
+replay passes.
+
+## Visual representation
+
+The default mode prints one block per turn:
+
+- the movements of the turn, with every destination painted with the `color=`
+  of its zone (any single-word color name is accepted, unknown names are
+  printed without color);
+- every occupied zone with its load (`1/2`), a `FULL` tag when it is full, its
+  type when it is not `normal`, and the drones inside;
+- the drones in flight toward a `restricted` zone;
+- the number of drones delivered and in flight in the title of the turn.
+
+At the end, a summary shows the total turns, the average number of drones
+moving per turn, the average number of turns per drone and the total path
+cost. Seeing the `FULL` zones makes it easy to understand where the drones
+wait and why a map needs a given number of turns.
+
+Colors are only used on a real terminal. `NO_COLOR` turns them off and
+`FORCE_COLOR` forces them. `--plain` prints only the output format of the
+subject, one line per turn.
+
+## Example
+
+Input (`maps/easy/01_linear_path.txt`):
+
+```
+nb_drones: 2
+
+start_hub: start 0 0 [color=green]
+hub: waypoint1 1 0 [color=blue]
+hub: waypoint2 2 0 [color=blue]
+end_hub: goal 3 0 [color=red]
+
+connection: start-waypoint1
+connection: waypoint1-waypoint2
+connection: waypoint2-goal
+```
+
+Output with `--plain`:
+
+```
+D1-waypoint1
+D1-waypoint2 D2-waypoint1
+D1-goal D2-waypoint2
+D2-goal
+```
+
+On a restricted zone the drone first appears on the connection and arrives on
+the next turn, for example `D1-loop_b-exit_point` and then `D1-exit_point`.
+
+## Performance
+
+Turns obtained on the provided maps (all outputs pass the validator):
+
+| Map | Drones | Turns | Target |
+|---|---|---|---|
+| Linear path | 2 | 4 | 6 |
+| Simple fork | 4 | 4 | 8 |
+| Basic capacity | 4 | 4 | 6 |
+| Dead end trap | 5 | 8 | 12 |
+| Circular loop | 6 | 15 | 15 |
+| Priority puzzle | 5 | 7 | 12 |
+| Maze nightmare | 8 | 13 | 30 |
+| Capacity hell | 12 | 16 | 35 |
+| Ultimate challenge | 15 | 26 | 45 |
+| The Impossible Dream | 25 | 43 | 45 (record) |
+
+## Resources
+
+- Python documentation: `typing`, `heapq`, `unittest`.
+- PEP 8 (style) and PEP 257 (docstrings).
+- flake8 and mypy documentation; uv documentation.
+- E. W. Dijkstra, *A note on two problems in connexion with graphs* (1959).
+- D. Silver, *Cooperative Pathfinding*, AIIDE 2005: planning agents one after
+  the other with a reservation table in space and time.
+
+### Use of AI
+
+Claude (Anthropic) was used for the following tasks:
+
+- Discussing the problem and choosing the approach (reservation table and
+  Dijkstra over zone and turn).
+- Writing the first version of the code, file by file: parser, graph,
+  pathfinder, simulation, validator and terminal display.
+- Testing: running all provided maps and a set of invalid map files, and
+  re-checking the outputs with a second, independent checker.
+
+[EDIT THIS PART WITH THE TRUTH: what you did yourself to understand and verify
+the code, for example what you rewrote, what you tested, what you changed
+after peer discussion.]
